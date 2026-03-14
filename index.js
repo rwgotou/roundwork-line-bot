@@ -1,5 +1,6 @@
 const express = require("express");
 const line = require("@line/bot-sdk");
+const axios = require("axios");
 
 const app = express();
 
@@ -12,7 +13,10 @@ const client = new line.messagingApi.MessagingApiClient({
   channelAccessToken: config.channelAccessToken,
 });
 
-// コース一覧（12件）
+// ===== GASのWebアプリURLに置き換える =====
+const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxkmNffJmVgALmvM1pjeTz72itaqU6kEuEzJKCwE8gN3liafEzF8i-1G2dHRdPMx7Kyxg/exec";
+
+// コース一覧
 const COURSES = [
   "保A",
   "保B",
@@ -58,17 +62,17 @@ async function handleEvent(event) {
 
   const text = (event.message.text || "").trim();
   const replyToken = event.replyToken;
-  const userId = event.source.userId;
+  const userId = event.source.userId || "";
 
   if (!userId) return;
 
-  // いつでもリセット可能
+  // キャンセル
   if (text === "キャンセル") {
     delete userStates[userId];
     return replyText(replyToken, "操作をキャンセルしました。");
   }
 
-  // ===== 出発報告スタート =====
+  // 出発報告スタート
   if (text === "出発報告") {
     userStates[userId] = {
       flow: "departure",
@@ -77,7 +81,7 @@ async function handleEvent(event) {
     return replyQuickReply(replyToken, "出発するコースを選択してください", COURSES);
   }
 
-  // ===== 終了報告スタート =====
+  // 終了報告スタート
   if (text === "終了報告") {
     userStates[userId] = {
       flow: "finish",
@@ -86,7 +90,7 @@ async function handleEvent(event) {
     return replyQuickReply(replyToken, "終了したコースを選択してください", COURSES);
   }
 
-  // ===== 業務連絡スタート =====
+  // 業務連絡スタート
   if (text === "業務連絡") {
     userStates[userId] = {
       flow: "business",
@@ -105,7 +109,7 @@ async function handleEvent(event) {
   }
 
   // =========================
-  // 出発報告フロー
+  // 出発報告
   // =========================
   if (state.flow === "departure") {
     if (state.step === "course") {
@@ -127,6 +131,9 @@ async function handleEvent(event) {
 
     if (state.step === "health") {
       if (text === "問題あり") {
+        const logMessage = `問題あり`;
+        await sendLog(userId, "出発点呼異常", state.course || "", logMessage);
+
         delete userStates[userId];
         return replyText(
           replyToken,
@@ -148,6 +155,13 @@ async function handleEvent(event) {
           `体調良好・アルコールなし を受け付けました。\n` +
           `今日も安全運転でお願いします。`;
 
+        await sendLog(
+          userId,
+          "出発",
+          state.course,
+          "体調良好・アルコールなし"
+        );
+
         delete userStates[userId];
         return replyText(replyToken, doneMessage);
       }
@@ -165,7 +179,7 @@ async function handleEvent(event) {
   }
 
   // =========================
-  // 終了報告フロー
+  // 終了報告
   // =========================
   if (state.flow === "finish") {
     if (state.step === "course") {
@@ -174,16 +188,23 @@ async function handleEvent(event) {
       }
 
       const doneMessage = `終了｜${text} を受け付けました。\n本日もお疲れさまでした。`;
+
+      await sendLog(
+        userId,
+        "終了",
+        text,
+        "終了受付"
+      );
+
       delete userStates[userId];
       return replyText(replyToken, doneMessage);
     }
   }
 
   // =========================
-  // 業務連絡フロー
+  // 業務連絡
   // =========================
   if (state.flow === "business") {
-    // 種類選択
     if (state.step === "type") {
       if (!BUSINESS_TYPES.includes(text)) {
         return replyQuickReply(replyToken, "業務連絡の種類を選択してください", BUSINESS_TYPES);
@@ -239,6 +260,13 @@ async function handleEvent(event) {
         `遅延時間: ${state.delayTime}\n` +
         `原因: ${text}`;
 
+      await sendLog(
+        userId,
+        "配送遅延",
+        state.course,
+        `遅延時間: ${state.delayTime} / 原因: ${text}`
+      );
+
       delete userStates[userId];
       return replyText(replyToken, doneMessage);
     }
@@ -284,6 +312,13 @@ async function handleEvent(event) {
         `車両: ${state.drivable}\n` +
         `状況: ${detail}`;
 
+      await sendLog(
+        userId,
+        "交通事故",
+        state.course,
+        `けが: ${state.injury} / 車両: ${state.drivable} / 状況: ${detail}`
+      );
+
       delete userStates[userId];
       return replyText(replyToken, doneMessage);
     }
@@ -296,12 +331,37 @@ async function handleEvent(event) {
         `業務連絡｜その他\n` +
         `内容: ${detail}`;
 
+      await sendLog(
+        userId,
+        "その他",
+        "",
+        detail
+      );
+
       delete userStates[userId];
       return replyText(replyToken, doneMessage);
     }
   }
 
   return replyText(replyToken, "もう一度、リッチメニューから操作してください。");
+}
+
+async function sendLog(userId, type, course, message) {
+  if (!GAS_WEB_APP_URL || GAS_WEB_APP_URL === "YOUR_GAS_WEB_APP_URL") {
+    console.log("GAS_WEB_APP_URL が未設定のためログ送信をスキップしました。");
+    return;
+  }
+
+  try {
+    await axios.post(GAS_WEB_APP_URL, {
+      userId,
+      type,
+      course,
+      message,
+    });
+  } catch (error) {
+    console.error("ログ送信エラー:", error.message);
+  }
 }
 
 async function replyText(replyToken, text) {
