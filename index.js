@@ -13,10 +13,17 @@ const client = new line.messagingApi.MessagingApiClient({
   channelAccessToken: config.channelAccessToken,
 });
 
-// ===== GASのWebアプリURLに置き換える =====
-const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxkmNffJmVgALmvM1pjeTz72itaqU6kEuEzJKCwE8gN3liafEzF8i-1G2dHRdPMx7Kyxg/exec";
+// ===== GAS URL =====
+const GAS_WEB_APP_URL =
+  "https://script.google.com/macros/s/AKfycbxkmNffJmVgALmvM1pjeTz72itaqU6kEuEzJKCwE8gN3liafEzF8i-1G2dHRdPMx7Kyxg/exec";
 
-// コース一覧
+// ===== 管理者LINE userId（複数） =====
+const ADMIN_USERS = [
+  "U6b698f77fef818c8430066ddb7ccfb2a",
+  "Ub9e2aca9918b7cc0c8cf350a1afb483b",
+];
+
+// ===== コース一覧 =====
 const COURSES = [
   "保A",
   "保B",
@@ -72,7 +79,7 @@ async function handleEvent(event) {
     return replyText(replyToken, "操作をキャンセルしました。");
   }
 
-  // 出発報告スタート
+  // ===== 出発報告スタート =====
   if (text === "出発報告") {
     userStates[userId] = {
       flow: "departure",
@@ -81,7 +88,7 @@ async function handleEvent(event) {
     return replyQuickReply(replyToken, "出発するコースを選択してください", COURSES);
   }
 
-  // 終了報告スタート
+  // ===== 終了報告スタート =====
   if (text === "終了報告") {
     userStates[userId] = {
       flow: "finish",
@@ -90,7 +97,7 @@ async function handleEvent(event) {
     return replyQuickReply(replyToken, "終了したコースを選択してください", COURSES);
   }
 
-  // 業務連絡スタート
+  // ===== 業務連絡スタート =====
   if (text === "業務連絡") {
     userStates[userId] = {
       flow: "business",
@@ -131,23 +138,27 @@ async function handleEvent(event) {
 
     if (state.step === "health") {
       if (text === "問題あり") {
-        const logMessage = `問題あり`;
-        await sendLog(userId, "出発点呼異常", state.course || "", logMessage);
+        const profile = await getUserProfileSafe(userId);
+        const notifyName = profile.displayName || "不明";
+
+        await sendLog(userId, "出発点呼異常", state.course || "", "問題あり");
+
+        await notifyAdmins(
+          `⚠️出発点呼異常\n\n` +
+            `送信者: ${notifyName}\n` +
+            `コース: ${state.course || ""}\n` +
+            `内容: 問題あり`
+        );
 
         delete userStates[userId];
         return replyText(
           replyToken,
-          `出発点呼で「問題あり」を受け付けました。\n管理者へ直接連絡してください。`
+          "出発点呼で「問題あり」を受け付けました。\n管理者へ直接連絡してください。"
         );
       }
 
-      if (text === "体調良好") {
-        state.healthOk = true;
-      }
-
-      if (text === "アルコールなし") {
-        state.alcoholOk = true;
-      }
+      if (text === "体調良好") state.healthOk = true;
+      if (text === "アルコールなし") state.alcoholOk = true;
 
       if (state.healthOk && state.alcoholOk) {
         const doneMessage =
@@ -189,12 +200,7 @@ async function handleEvent(event) {
 
       const doneMessage = `終了｜${text} を受け付けました。\n本日もお疲れさまでした。`;
 
-      await sendLog(
-        userId,
-        "終了",
-        text,
-        "終了受付"
-      );
+      await sendLog(userId, "終了", text, "終了受付");
 
       delete userStates[userId];
       return replyText(replyToken, doneMessage);
@@ -228,7 +234,7 @@ async function handleEvent(event) {
       }
     }
 
-    // 配送遅延
+    // ===== 配送遅延 =====
     if (state.step === "delay_course") {
       if (!COURSES.includes(text)) {
         return replyQuickReply(replyToken, "遅延しているコースを選択してください", COURSES);
@@ -254,6 +260,9 @@ async function handleEvent(event) {
         return replyQuickReply(replyToken, "遅延原因を選択してください", DELAY_REASONS);
       }
 
+      const profile = await getUserProfileSafe(userId);
+      const notifyName = profile.displayName || "不明";
+
       const doneMessage =
         `業務連絡｜配送遅延\n` +
         `コース: ${state.course}\n` +
@@ -267,11 +276,19 @@ async function handleEvent(event) {
         `遅延時間: ${state.delayTime} / 原因: ${text}`
       );
 
+      await notifyAdmins(
+        `⚠️配送遅延\n\n` +
+          `送信者: ${notifyName}\n` +
+          `コース: ${state.course}\n` +
+          `遅延時間: ${state.delayTime}\n` +
+          `原因: ${text}`
+      );
+
       delete userStates[userId];
       return replyText(replyToken, doneMessage);
     }
 
-    // 交通事故
+    // ===== 交通事故 =====
     if (state.step === "accident_course") {
       if (!COURSES.includes(text)) {
         return replyQuickReply(replyToken, "事故が発生したコースを選択してください", COURSES);
@@ -304,6 +321,8 @@ async function handleEvent(event) {
 
     if (state.step === "accident_detail") {
       const detail = text;
+      const profile = await getUserProfileSafe(userId);
+      const notifyName = profile.displayName || "不明";
 
       const doneMessage =
         `業務連絡｜交通事故\n` +
@@ -319,23 +338,35 @@ async function handleEvent(event) {
         `けが: ${state.injury} / 車両: ${state.drivable} / 状況: ${detail}`
       );
 
+      await notifyAdmins(
+        `🚨交通事故\n\n` +
+          `送信者: ${notifyName}\n` +
+          `コース: ${state.course}\n` +
+          `けが: ${state.injury}\n` +
+          `車両: ${state.drivable}\n` +
+          `状況: ${detail}`
+      );
+
       delete userStates[userId];
       return replyText(replyToken, doneMessage);
     }
 
-    // その他
+    // ===== その他 =====
     if (state.step === "other_message") {
       const detail = text;
+      const profile = await getUserProfileSafe(userId);
+      const notifyName = profile.displayName || "不明";
 
       const doneMessage =
         `業務連絡｜その他\n` +
         `内容: ${detail}`;
 
-      await sendLog(
-        userId,
-        "その他",
-        "",
-        detail
+      await sendLog(userId, "その他", "", detail);
+
+      await notifyAdmins(
+        `📩業務連絡｜その他\n\n` +
+          `送信者: ${notifyName}\n` +
+          `内容: ${detail}`
       );
 
       delete userStates[userId];
@@ -346,21 +377,58 @@ async function handleEvent(event) {
   return replyText(replyToken, "もう一度、リッチメニューから操作してください。");
 }
 
+async function getUserProfileSafe(userId) {
+  try {
+    const profile = await client.getProfile(userId);
+    return profile || {};
+  } catch (error) {
+    console.error("プロフィール取得エラー:", error.message);
+    return {};
+  }
+}
+
 async function sendLog(userId, type, course, message) {
-  if (!GAS_WEB_APP_URL || GAS_WEB_APP_URL === "YOUR_GAS_WEB_APP_URL") {
-    console.log("GAS_WEB_APP_URL が未設定のためログ送信をスキップしました。");
+  if (!GAS_WEB_APP_URL) {
+    console.log("GAS_WEB_APP_URL 未設定");
     return;
   }
 
   try {
+    const profile = await getUserProfileSafe(userId);
+    const userName = profile.displayName || "";
+
     await axios.post(GAS_WEB_APP_URL, {
       userId,
+      userName,
       type,
       course,
       message,
     });
   } catch (error) {
     console.error("ログ送信エラー:", error.message);
+  }
+}
+
+async function notifyAdmins(text) {
+  if (!ADMIN_USERS || ADMIN_USERS.length === 0) {
+    console.log("ADMIN_USERS 未設定");
+    return;
+  }
+
+  for (const adminId of ADMIN_USERS) {
+    try {
+      await client.pushMessage({
+        to: adminId,
+        messages: [
+          {
+            type: "text",
+            text,
+          },
+        ],
+      });
+    } catch (error) {
+      console.error(`管理者通知エラー (${adminId}):`, error.message);
+    }
   }
 }
 
