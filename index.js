@@ -23,7 +23,7 @@ const ADMIN_USERS = [
   "Ub9e2aca9918b7cc0c8cf350a1afb483b",
 ];
 
-// ===== コース一覧 =====
+// ===== コース一覧（大地は1つ） =====
 const COURSES = [
   "保A",
   "保B",
@@ -37,6 +37,7 @@ const COURSES = [
   "IH13",
   "焼き鳥",
   "うどん",
+  "大地",
 ];
 
 const DELAY_TIMES = ["0.5h", "1h", "1.5h", "2h", "2.5h", "3h"];
@@ -260,8 +261,7 @@ async function handleEvent(event) {
         return replyQuickReply(replyToken, "遅延原因を選択してください", DELAY_REASONS);
       }
 
-      const profile = await getUserProfileSafe(userId);
-      const notifyName = profile.displayName || "不明";
+      const notifyName = await getEmployeeNameFromSheet(userId);
 
       const doneMessage =
         `業務連絡｜配送遅延\n` +
@@ -321,8 +321,7 @@ async function handleEvent(event) {
 
     if (state.step === "accident_detail") {
       const detail = text;
-      const profile = await getUserProfileSafe(userId);
-      const notifyName = profile.displayName || "不明";
+      const notifyName = await getEmployeeNameFromSheet(userId);
 
       const doneMessage =
         `業務連絡｜交通事故\n` +
@@ -354,8 +353,7 @@ async function handleEvent(event) {
     // ===== その他 =====
     if (state.step === "other_message") {
       const detail = text;
-      const profile = await getUserProfileSafe(userId);
-      const notifyName = profile.displayName || "不明";
+      const notifyName = await getEmployeeNameFromSheet(userId);
 
       const doneMessage =
         `業務連絡｜その他\n` +
@@ -384,6 +382,29 @@ async function getUserProfileSafe(userId) {
   } catch (error) {
     console.error("プロフィール取得エラー:", error.message);
     return {};
+  }
+}
+
+// スプレッドシート上の社員名を取得
+async function getEmployeeNameFromSheet(userId) {
+  if (!GAS_WEB_APP_URL) return "不明";
+
+  try {
+    const response = await axios.get(GAS_WEB_APP_URL, {
+      params: {
+        mode: "getEmployeeName",
+        userId,
+      },
+    });
+
+    if (response.data && response.data.employeeName) {
+      return response.data.employeeName;
+    }
+
+    return "不明";
+  } catch (error) {
+    console.error("社員名取得エラー:", error.message);
+    return "不明";
   }
 }
 
