@@ -17,36 +17,26 @@ const client = new line.messagingApi.MessagingApiClient({
 const GAS_WEB_APP_URL =
   "https://script.google.com/macros/s/AKfycbxkmNffJmVgALmvM1pjeTz72itaqU6kEuEzJKCwE8gN3liafEzF8i-1G2dHRdPMx7Kyxg/exec";
 
-// ===== 管理者LINE userId（複数） =====
+// ===== 管理者LINE userId =====
 const ADMIN_USERS = [
   "U6b698f77fef818c8430066ddb7ccfb2a",
   "Ub9e2aca9918b7cc0c8cf350a1afb483b",
 ];
 
-// ===== コース一覧（大地は1つ） =====
-const COURSES = [
-  "保A",
-  "保B",
-  "保C",
-  "保E",
-  "丸大E",
-  "丸大L",
-  "チーズ",
-  "IH2",
-  "IH10",
-  "IH13",
-  "焼き鳥",
-  "うどん",
-  "大地",
-];
+// ===== 枝分かれ用カテゴリ =====
+const COURSE_GROUPS = ["保育園便", "丸大", "IH", "大地", "その他", "スポット便"];
 
-const DELAY_TIMES = ["0.5h", "1h", "1.5h", "2h", "2.5h", "3h"];
-const DELAY_REASONS = ["渋滞", "トラブル", "事故", "体調不良"];
-const INJURY_OPTIONS = ["けがあり", "けがなし"];
-const DRIVABLE_OPTIONS = ["自走可能", "自走不可"];
-const BUSINESS_TYPES = ["配送遅延", "交通事故", "その他"];
+const COURSES_BY_GROUP = {
+  保育園便: ["保A", "保B", "保C", "保E"],
+  丸大: ["丸大E", "丸大L"],
+  IH: ["IH2", "IH10", "IH13"],
+  大地: ["大地ア", "大地イ"],
+  その他: ["チーズ", "焼き鳥", "うどん"],
+};
 
-// ユーザーごとの一時状態
+const CHECK_OPTIONS = ["点呼OK", "問題あり"];
+
+// ユーザーごとの途中状態
 const userStates = {};
 
 app.get("/", (req, res) => {
@@ -74,37 +64,28 @@ async function handleEvent(event) {
 
   if (!userId) return;
 
-  // キャンセル
+  // どこでもキャンセル可能
   if (text === "キャンセル") {
     delete userStates[userId];
-    return replyText(replyToken, "操作をキャンセルしました。");
+    return replyText(replyToken, "操作をキャンセルしました。最初からやり直してください。");
   }
 
   // ===== 出発報告スタート =====
   if (text === "出発報告") {
     userStates[userId] = {
       flow: "departure",
-      step: "course",
+      step: "group",
     };
-    return replyQuickReply(replyToken, "出発するコースを選択してください", COURSES);
+    return replyQuickReply(replyToken, "系統を選択してください", COURSE_GROUPS);
   }
 
   // ===== 終了報告スタート =====
   if (text === "終了報告") {
     userStates[userId] = {
       flow: "finish",
-      step: "course",
+      step: "group",
     };
-    return replyQuickReply(replyToken, "終了したコースを選択してください", COURSES);
-  }
-
-  // ===== 業務連絡スタート =====
-  if (text === "業務連絡") {
-    userStates[userId] = {
-      flow: "business",
-      step: "type",
-    };
-    return replyQuickReply(replyToken, "業務連絡の種類を選択してください", BUSINESS_TYPES);
+    return replyQuickReply(replyToken, "系統を選択してください", COURSE_GROUPS);
   }
 
   const state = userStates[userId];
@@ -112,280 +93,200 @@ async function handleEvent(event) {
   if (!state) {
     return replyText(
       replyToken,
-      "リッチメニューの「出発報告」「終了報告」「業務連絡」から選択してください。"
+      "リッチメニューの「出発報告」「終了報告」「キャンセル」から操作してください。"
     );
   }
 
   // =========================
-  // 出発報告
+  // 出発報告フロー
   // =========================
   if (state.flow === "departure") {
-    if (state.step === "course") {
-      if (!COURSES.includes(text)) {
-        return replyQuickReply(replyToken, "出発するコースを選択してください", COURSES);
+    // 1) 系統選択
+    if (state.step === "group") {
+      if (!COURSE_GROUPS.includes(text)) {
+        return replyQuickReply(replyToken, "系統を選択してください", COURSE_GROUPS);
       }
 
-      state.course = text;
-      state.step = "health";
-      state.healthOk = false;
-      state.alcoholOk = false;
+      state.group = text;
 
+      if (text === "スポット便") {
+        state.step = "spot_course";
+        return replyText(replyToken, "スポット便のコース名を入力してください。");
+      }
+
+      state.step = "course";
       return replyQuickReply(
         replyToken,
-        `出発点呼を確認してください\nコース: ${state.course}`,
-        ["体調良好", "アルコールなし", "問題あり"]
+        `${text} のコースを選択してください`,
+        COURSES_BY_GROUP[text]
       );
     }
 
-    if (state.step === "health") {
+    // 2) スポット便自由入力
+    if (state.step === "spot_course") {
+      state.course = text;
+      state.step = "check";
+
+      return replyQuickReply(
+        replyToken,
+        `出発点呼を確認してください\n\n` +
+          `コース: ${state.course}\n` +
+          `・アルコール問題なし\n` +
+          `・免許携帯あり\n` +
+          `・体調問題なし`,
+        CHECK_OPTIONS
+      );
+    }
+
+    // 3) コース選択
+    if (state.step === "course") {
+      const validCourses = COURSES_BY_GROUP[state.group] || [];
+      if (!validCourses.includes(text)) {
+        return replyQuickReply(
+          replyToken,
+          `${state.group} のコースを選択してください`,
+          validCourses
+        );
+      }
+
+      state.course = text;
+      state.step = "check";
+
+      return replyQuickReply(
+        replyToken,
+        `出発点呼を確認してください\n\n` +
+          `コース: ${state.course}\n` +
+          `・アルコール問題なし\n` +
+          `・免許携帯あり\n` +
+          `・体調問題なし`,
+        CHECK_OPTIONS
+      );
+    }
+
+    // 4) 点呼確認
+    if (state.step === "check") {
+      const employeeName = await getEmployeeNameFromSheet(userId);
+
       if (text === "問題あり") {
-        const profile = await getUserProfileSafe(userId);
-        const notifyName = profile.displayName || "不明";
+        const doneMessage =
+          `出発点呼で「問題あり」を受け付けました。\n` +
+          `管理者へ直接連絡してください。`;
 
-        await sendLog(userId, "出発点呼異常", state.course || "", "問題あり");
+        // 返信を最優先
+        await replyText(replyToken, doneMessage);
 
-        await notifyAdmins(
+        // 記録と通知は後で
+        sendLog(userId, "出発点呼異常", state.course || "", "問題あり").catch(console.error);
+        notifyAdmins(
           `⚠️出発点呼異常\n\n` +
-            `送信者: ${notifyName}\n` +
+            `送信者: ${employeeName}\n` +
             `コース: ${state.course || ""}\n` +
             `内容: 問題あり`
-        );
+        ).catch(console.error);
 
         delete userStates[userId];
-        return replyText(
-          replyToken,
-          "出発点呼で「問題あり」を受け付けました。\n管理者へ直接連絡してください。"
-        );
+        return;
       }
 
-      if (text === "体調良好") state.healthOk = true;
-      if (text === "アルコールなし") state.alcoholOk = true;
-
-      if (state.healthOk && state.alcoholOk) {
+      if (text === "点呼OK") {
         const doneMessage =
           `出発｜${state.course}\n` +
-          `体調良好・アルコールなし を受け付けました。\n` +
+          `点呼OK を受け付けました。\n` +
           `今日も安全運転でお願いします。`;
 
-        await sendLog(
-          userId,
-          "出発",
-          state.course,
-          "体調良好・アルコールなし"
-        );
+        // 返信を最優先
+        await replyText(replyToken, doneMessage);
+
+        // 記録は後で
+        sendLog(userId, "出発", state.course, "点呼OK").catch(console.error);
 
         delete userStates[userId];
-        return replyText(replyToken, doneMessage);
+        return;
       }
-
-      const remain = [];
-      if (!state.healthOk) remain.push("体調良好");
-      if (!state.alcoholOk) remain.push("アルコールなし");
 
       return replyQuickReply(
         replyToken,
-        `未確認項目があります。\n残り: ${remain.join(" / ")}`,
-        [...remain, "問題あり"]
+        `出発点呼を確認してください\n\n` +
+          `コース: ${state.course}\n` +
+          `・アルコール問題なし\n` +
+          `・免許携帯あり\n` +
+          `・体調問題なし`,
+        CHECK_OPTIONS
       );
     }
   }
 
   // =========================
-  // 終了報告
+  // 終了報告フロー
   // =========================
   if (state.flow === "finish") {
+    // 1) 系統選択
+    if (state.step === "group") {
+      if (!COURSE_GROUPS.includes(text)) {
+        return replyQuickReply(replyToken, "系統を選択してください", COURSE_GROUPS);
+      }
+
+      state.group = text;
+
+      if (text === "スポット便") {
+        state.step = "spot_course";
+        return replyText(replyToken, "終了したスポット便のコース名を入力してください。");
+      }
+
+      state.step = "course";
+      return replyQuickReply(
+        replyToken,
+        `${text} のコースを選択してください`,
+        COURSES_BY_GROUP[text]
+      );
+    }
+
+    // 2) スポット便自由入力
+    if (state.step === "spot_course") {
+      state.course = text;
+
+      const doneMessage = `終了｜${state.course} を受け付けました。\n本日もお疲れさまでした。`;
+
+      // 返信優先
+      await replyText(replyToken, doneMessage);
+
+      // 記録後回し
+      sendLog(userId, "終了", state.course, "終了受付").catch(console.error);
+
+      delete userStates[userId];
+      return;
+    }
+
+    // 3) コース選択
     if (state.step === "course") {
-      if (!COURSES.includes(text)) {
-        return replyQuickReply(replyToken, "終了したコースを選択してください", COURSES);
-      }
-
-      const doneMessage = `終了｜${text} を受け付けました。\n本日もお疲れさまでした。`;
-
-      await sendLog(userId, "終了", text, "終了受付");
-
-      delete userStates[userId];
-      return replyText(replyToken, doneMessage);
-    }
-  }
-
-  // =========================
-  // 業務連絡
-  // =========================
-  if (state.flow === "business") {
-    if (state.step === "type") {
-      if (!BUSINESS_TYPES.includes(text)) {
-        return replyQuickReply(replyToken, "業務連絡の種類を選択してください", BUSINESS_TYPES);
-      }
-
-      state.type = text;
-
-      if (text === "配送遅延") {
-        state.step = "delay_course";
-        return replyQuickReply(replyToken, "遅延しているコースを選択してください", COURSES);
-      }
-
-      if (text === "交通事故") {
-        state.step = "accident_course";
-        return replyQuickReply(replyToken, "事故が発生したコースを選択してください", COURSES);
-      }
-
-      if (text === "その他") {
-        state.step = "other_message";
-        return replyText(replyToken, "内容を入力してください。");
-      }
-    }
-
-    // ===== 配送遅延 =====
-    if (state.step === "delay_course") {
-      if (!COURSES.includes(text)) {
-        return replyQuickReply(replyToken, "遅延しているコースを選択してください", COURSES);
+      const validCourses = COURSES_BY_GROUP[state.group] || [];
+      if (!validCourses.includes(text)) {
+        return replyQuickReply(
+          replyToken,
+          `${state.group} のコースを選択してください`,
+          validCourses
+        );
       }
 
       state.course = text;
-      state.step = "delay_time";
-      return replyQuickReply(replyToken, "遅延時間を選択してください", DELAY_TIMES);
-    }
 
-    if (state.step === "delay_time") {
-      if (!DELAY_TIMES.includes(text)) {
-        return replyQuickReply(replyToken, "遅延時間を選択してください", DELAY_TIMES);
-      }
+      const doneMessage = `終了｜${state.course} を受け付けました。\n本日もお疲れさまでした。`;
 
-      state.delayTime = text;
-      state.step = "delay_reason";
-      return replyQuickReply(replyToken, "遅延原因を選択してください", DELAY_REASONS);
-    }
+      // 返信優先
+      await replyText(replyToken, doneMessage);
 
-    if (state.step === "delay_reason") {
-      if (!DELAY_REASONS.includes(text)) {
-        return replyQuickReply(replyToken, "遅延原因を選択してください", DELAY_REASONS);
-      }
-
-      const notifyName = await getEmployeeNameFromSheet(userId);
-
-      const doneMessage =
-        `業務連絡｜配送遅延\n` +
-        `コース: ${state.course}\n` +
-        `遅延時間: ${state.delayTime}\n` +
-        `原因: ${text}`;
-
-      await sendLog(
-        userId,
-        "配送遅延",
-        state.course,
-        `遅延時間: ${state.delayTime} / 原因: ${text}`
-      );
-
-      await notifyAdmins(
-        `⚠️配送遅延\n\n` +
-          `送信者: ${notifyName}\n` +
-          `コース: ${state.course}\n` +
-          `遅延時間: ${state.delayTime}\n` +
-          `原因: ${text}`
-      );
+      // 記録後回し
+      sendLog(userId, "終了", state.course, "終了受付").catch(console.error);
 
       delete userStates[userId];
-      return replyText(replyToken, doneMessage);
-    }
-
-    // ===== 交通事故 =====
-    if (state.step === "accident_course") {
-      if (!COURSES.includes(text)) {
-        return replyQuickReply(replyToken, "事故が発生したコースを選択してください", COURSES);
-      }
-
-      state.course = text;
-      state.step = "accident_injury";
-      return replyQuickReply(replyToken, "けがの有無を選択してください", INJURY_OPTIONS);
-    }
-
-    if (state.step === "accident_injury") {
-      if (!INJURY_OPTIONS.includes(text)) {
-        return replyQuickReply(replyToken, "けがの有無を選択してください", INJURY_OPTIONS);
-      }
-
-      state.injury = text;
-      state.step = "accident_drivable";
-      return replyQuickReply(replyToken, "車両の自走可否を選択してください", DRIVABLE_OPTIONS);
-    }
-
-    if (state.step === "accident_drivable") {
-      if (!DRIVABLE_OPTIONS.includes(text)) {
-        return replyQuickReply(replyToken, "車両の自走可否を選択してください", DRIVABLE_OPTIONS);
-      }
-
-      state.drivable = text;
-      state.step = "accident_detail";
-      return replyText(replyToken, "事故の状況を入力してください。");
-    }
-
-    if (state.step === "accident_detail") {
-      const detail = text;
-      const notifyName = await getEmployeeNameFromSheet(userId);
-
-      const doneMessage =
-        `業務連絡｜交通事故\n` +
-        `コース: ${state.course}\n` +
-        `けが: ${state.injury}\n` +
-        `車両: ${state.drivable}\n` +
-        `状況: ${detail}`;
-
-      await sendLog(
-        userId,
-        "交通事故",
-        state.course,
-        `けが: ${state.injury} / 車両: ${state.drivable} / 状況: ${detail}`
-      );
-
-      await notifyAdmins(
-        `🚨交通事故\n\n` +
-          `送信者: ${notifyName}\n` +
-          `コース: ${state.course}\n` +
-          `けが: ${state.injury}\n` +
-          `車両: ${state.drivable}\n` +
-          `状況: ${detail}`
-      );
-
-      delete userStates[userId];
-      return replyText(replyToken, doneMessage);
-    }
-
-    // ===== その他 =====
-    if (state.step === "other_message") {
-      const detail = text;
-      const notifyName = await getEmployeeNameFromSheet(userId);
-
-      const doneMessage =
-        `業務連絡｜その他\n` +
-        `内容: ${detail}`;
-
-      await sendLog(userId, "その他", "", detail);
-
-      await notifyAdmins(
-        `📩業務連絡｜その他\n\n` +
-          `送信者: ${notifyName}\n` +
-          `内容: ${detail}`
-      );
-
-      delete userStates[userId];
-      return replyText(replyToken, doneMessage);
+      return;
     }
   }
 
   return replyText(replyToken, "もう一度、リッチメニューから操作してください。");
 }
 
-async function getUserProfileSafe(userId) {
-  try {
-    const profile = await client.getProfile(userId);
-    return profile || {};
-  } catch (error) {
-    console.error("プロフィール取得エラー:", error.message);
-    return {};
-  }
-}
-
-// スプレッドシート上の社員名を取得
+// ===== スプレッドシートの users シートから社員名取得 =====
 async function getEmployeeNameFromSheet(userId) {
   if (!GAS_WEB_APP_URL) return "不明";
 
@@ -398,7 +299,7 @@ async function getEmployeeNameFromSheet(userId) {
     });
 
     if (response.data && response.data.employeeName) {
-      return response.data.employeeName;
+      return response.data.employeeName || "不明";
     }
 
     return "不明";
@@ -408,6 +309,7 @@ async function getEmployeeNameFromSheet(userId) {
   }
 }
 
+// ===== ログ送信 =====
 async function sendLog(userId, type, course, message) {
   if (!GAS_WEB_APP_URL) {
     console.log("GAS_WEB_APP_URL 未設定");
@@ -415,12 +317,8 @@ async function sendLog(userId, type, course, message) {
   }
 
   try {
-    const profile = await getUserProfileSafe(userId);
-    const userName = profile.displayName || "";
-
     await axios.post(GAS_WEB_APP_URL, {
       userId,
-      userName,
       type,
       course,
       message,
@@ -430,29 +328,29 @@ async function sendLog(userId, type, course, message) {
   }
 }
 
+// ===== 管理者複数通知 =====
 async function notifyAdmins(text) {
   if (!ADMIN_USERS || ADMIN_USERS.length === 0) {
     console.log("ADMIN_USERS 未設定");
     return;
   }
 
-  for (const adminId of ADMIN_USERS) {
-    try {
-      await client.pushMessage({
-        to: adminId,
-        messages: [
-          {
-            type: "text",
-            text,
-          },
-        ],
-      });
-    } catch (error) {
-      console.error(`管理者通知エラー (${adminId}):`, error.message);
-    }
-  }
+  const promises = ADMIN_USERS.map((adminId) =>
+    client.pushMessage({
+      to: adminId,
+      messages: [
+        {
+          type: "text",
+          text,
+        },
+      ],
+    })
+  );
+
+  await Promise.allSettled(promises);
 }
 
+// ===== LINE返信 =====
 async function replyText(replyToken, text) {
   return client.replyMessage({
     replyToken,
